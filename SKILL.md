@@ -21,6 +21,10 @@ Este skill produce una página HTML autocontenida. La página se reproduce sola,
 | `scripts/simular.cjs` | Prueba la reproducción completa con Node, sin navegador. |
 | `scripts/render.mjs` | Fotos, hoja de contacto y MP4. Necesita Playwright y ffmpeg. |
 | `scripts/palabras.mjs` | Convierte una transcripción de Whisper en tiempos por palabra. |
+| `scripts/schema.mjs` | Esquema Zod (`ExplainerSpecSchema`) para validar especificaciones declarativas `explainer.json`. |
+| `scripts/compilador.mjs` | Compilador determinista que genera `index.html` desde `explainer.json` y `audio_meta.json`. |
+| `scripts/voces.py` | Menú de selección, prueba y síntesis de voces neurales (`edge-tts`) sincronizadas por escena. |
+| `scripts/pipeline.py` | Pipeline integral: valida `explainer.json`, sintetiza voz, compila HTML y verifica con `simular.cjs`. |
 
 En los comandos, `SKILL_DIR` es la carpeta de este archivo.
 
@@ -46,7 +50,7 @@ El mismo motor sirve para estilos muy distintos. Preguntá antes de investigar o
 | # | Pregunta | Opciones |
 |---|---|---|
 | 1 | Formato | Vertical 9:16 (TikTok, Reels, Shorts) · Horizontal 16:9 (YouTube, clase, presentación) · Cuadrado 1:1 · Feed 4:5 |
-| 2 | Voz | La grabo yo después · Ya tengo el audio grabado · Sin voz: el texto va en pantalla |
+| 2 | Voz | Voz generada con IA (TTS Neural) · La grabo yo después · Ya tengo el audio grabado · Sin voz: el texto va en pantalla |
 | 3 | Estilo visual | Noche · Papel · Pizarra · Plano color · Plano técnico · Tu marca: colores y tipografía propios |
 | 4 | Duración | 30–45 s · 60–90 s · 2–3 min |
 
@@ -86,6 +90,7 @@ Si la carpeta es de solo lectura, mostrá el perfil en un bloque. Así el usuari
 
 | Voz | Guion | Subtítulos | Reloj |
 |---|---|---|---|
+| Voz generada con IA | Escrito para locución fluida | Simples o karaoke | El audio real generado con `scripts/voces.py`. |
 | La grabo yo | Escrito para decirlo en voz alta | Karaoke o simples, con tiempo estimado | Estimado. Al grabar, resincronizá con `references/audio.md`. |
 | Ya tengo el audio | La transcripción del audio | Exactos, palabra por palabra | El audio. |
 | Sin voz | Frases cortas para leer | `simples`: son el texto del video | Estimado con `ritmo: 1.3`. |
@@ -199,13 +204,35 @@ Reconstruir una animación cuesta mucho más que corregir un texto. Por eso se a
    - Comparalo con el storyboard. Pasá la lista de `references/formatos.md`.
    - Corregí con notas que nombran escena y segundo. Repetí hasta que cada escena pase.
    - Sin Playwright, salteá este paso y pedile al usuario que revise el resultado.
-9. Entregá con la sección "Entrega".
+9. **Pipeline declarativo, locución y exportación a video con subtítulos y voz (TTS Neural):**
+   Preferí definir el video en un archivo declarativo `explainer.json` validado por `schema.mjs` y compilarlo con el pipeline integral:
+   ```bash
+   # 1. Flujo declarativo completo (valida spec, sintetiza voz, compila index.html y simula todos los formatos):
+   python SKILL_DIR/scripts/pipeline.py explainer.json
+
+   # (Opcional) Si usás HTML directo o querés elegir voz interactivamente:
+   python SKILL_DIR/scripts/voces.py --generar explainer.html --menu
+   # O directo con una voz específica:
+   python SKILL_DIR/scripts/voces.py --generar explainer.html --voz es-AR-TomasNeural --rate -4%
+
+   # 2. Renderizar video con subtítulos en Playwright:
+   node SKILL_DIR/scripts/render.mjs index.html
+
+   # 3. Fusionar video y voz con ffmpeg:
+   ffmpeg -y -i out/index.mp4 -i voz.mp3 -c:v copy -c:a aac -b:a 192k -shortest -movflags +faststart out/explainer-con-voz.mp4
+   ```
+
+   **Reglas críticas de subtítulos y render cuadro por cuadro:**
+   - **Visibilidad en render (`?render=1`):** `.clean` oculta **únicamente** los controles de interfaz (`.topbar`, `.pz`, `.replay`); **NUNCA** debe ocultar `.subs`. Solo `.bare` (`?bare=1`) oculta `.subs` para exportaciones limpias sin texto.
+   - **Congelado de animaciones CSS:** Conservá `.frame.frozen .subs,.frame.frozen .subs .w{animation:none!important;transition:none!important}` para que Playwright capture los subtítulos con opacidad completa en cada cuadro sin quedar a mitad de un fade-in.
+   - **Escalado de palabras con audio real (`AUDIO_META`):** Cuando la duración de la escena proviene de `AUDIO_META`, escalá proporcionalmente los tiempos estimados de cada palabra (`s.words`) respecto a `audio_dur` (la duración hablada real sin pausa de búfer) para que todos los bloques de subtítulos y el resaltado `karaoke` avancen sincronizados antes de terminar la escena.
+10. Entregá con la sección "Entrega".
 
 ## Qué tocar del motor
 
 La plantilla está dividida en secciones numeradas.
 
-**Conservá:** 3 Formatos, 4 Tokens y utilidades, 5 Lienzo y cámara, 6 Ayudantes, 7 Íconos, 10 a 12 Motor y contrato de render. También el CSS del cuadro, los subtítulos, el panel, el modo grabación y el interruptor de subtítulos.
+**Conservá:** 3 Formatos, 4 Tokens y utilidades, 5 Lienzo y cámara, 6 Ayudantes, 7 Íconos, 10 a 12 Motor y contrato de render. También el CSS del cuadro, los subtítulos (`.subs` visible en `.clean`, oculto solo en `.bare` y sin transiciones en `.frame.frozen`), el panel, el modo grabación y el interruptor de subtítulos.
 
 **Reemplazá:**
 

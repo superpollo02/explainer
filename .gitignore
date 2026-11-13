@@ -2,3 +2,5 @@ node_modules
 out/
 perfil.md
 .DS_Store
+audio_parts/
+test_voz.mp3
