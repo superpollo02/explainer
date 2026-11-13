@@ -188,7 +188,8 @@ async def cmd_generate(html_path, voice=None, rate=DEFAULT_RATE, pitch=DEFAULT_P
         scene_dur = raw_dur + pause
         audio_meta.append({
             "start": round(total_time, 3),
-            "dur": round(scene_dur, 3)
+            "dur": round(scene_dur, 3),
+            "audio_dur": round(raw_dur, 3)
         })
         total_time += scene_dur
 
@@ -214,13 +215,32 @@ async def cmd_generate(html_path, voice=None, rate=DEFAULT_RATE, pitch=DEFAULT_P
     if "const AUDIO_META =" in html_content:
         updated_html = re.sub(r"const\s+AUDIO_META\s*=\s*\[[\s\S]*?\];", f"const AUDIO_META = {meta_json};", html_content)
     else:
-        # Reemplazar la asignación de s.dur y s.start
-        target = "let acc = 0;\n  SCENES.forEach((s, i) => {"
-        replacement = f"{meta_code}\n  let acc = 0;\n  SCENES.forEach((s, i) => {{\n    s.dur = AUDIO_META[i].dur;\n    s.start = AUDIO_META[i].start;"
-        if target in html_content:
-            updated_html = html_content.replace(target, replacement)
+        plantilla_loop = "SCENES.forEach((s, i) => { const e = estimate(SCRIPT[i]); s.words = e.words; s.dur = e.dur; s.start = acc; acc += s.dur; });"
+        scaled_loop = (
+            f"{meta_code}\n  SCENES.forEach((s, i) => {{\n"
+            "    const e = estimate(SCRIPT[i]);\n"
+            "    const estSpeech = Math.max(0.1, e.dur - CONFIG.cola);\n"
+            "    const realSpeech = Math.max(0.1, AUDIO_META[i].audio_dur || (AUDIO_META[i].dur - 0.5));\n"
+            "    const scale = realSpeech / estSpeech;\n"
+            "    s.words = e.words.map(w => ({ w: w.w, s: +(w.s * scale).toFixed(3), e: +(w.e * scale).toFixed(3) }));\n"
+            "    s.dur = AUDIO_META[i].dur;\n"
+            "    s.start = AUDIO_META[i].start;\n"
+            "  });"
+        )
+        if plantilla_loop in html_content:
+            updated_html = html_content.replace(plantilla_loop, scaled_loop)
         else:
-            updated_html = html_content
+            target = "let acc = 0;\n  SCENES.forEach((s, i) => {"
+            replacement = (
+                f"{meta_code}\n  let acc = 0;\n  SCENES.forEach((s, i) => {{\n"
+                "    const realSpeech = AUDIO_META[i].audio_dur || (AUDIO_META[i].dur - 0.5);\n"
+                "    const estSpeech = Math.max(0.1, s.dur - (CONFIG.cola || 0));\n"
+                "    const scale = realSpeech / estSpeech;\n"
+                "    if (Array.isArray(s.words)) s.words = s.words.map(w => ({ w: w.w, s: +(w.s * scale).toFixed(3), e: +(w.e * scale).toFixed(3) }));\n"
+                "    s.dur = AUDIO_META[i].dur;\n"
+                "    s.start = AUDIO_META[i].start;"
+            )
+            updated_html = html_content.replace(target, replacement) if target in html_content else html_content
 
     with open(html_abs, "w", encoding="utf-8") as f:
         f.write(updated_html)

@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -65,6 +66,18 @@ def validate_spec(json_path, script_dir):
         print(e.stdout)
         print(e.stderr)
         sys.exit(1)
+
+def lint_spec(spec):
+    emoji_re = re.compile(r"[\U0001F300-\U0001FAFF\u23F0-\u23FA\u2600-\u27BF]")
+    for i, sc in enumerate(spec.get("escenas", []), 1):
+        draw = sc.get("drawCode") or ""
+        found = emoji_re.findall(draw)
+        if found:
+            uniq = " ".join(dict.fromkeys(found))
+            print(
+                f"  [LINT] Escena {i} ({sc.get('id', 'sin-id')}): contiene emojis Unicode en drawCode ({uniq}). "
+                "Usá íconos vectoriales del motor según references/estilos.md."
+            )
 
 async def synthesize_voice_for_spec(spec, spec_dir, voice=None, rate=None, pitch=None, pause=None):
     import edge_tts
@@ -188,6 +201,36 @@ def simulate_html(output_html, script_dir, all_formats=True):
 
     print("  ✓ Simulación completada con 0 errores.")
 
+def format_srt_time(seconds):
+    ms_total = max(0, int(round(seconds * 1000)))
+    hours, rem = divmod(ms_total, 3600000)
+    minutes, rem = divmod(rem, 60000)
+    secs, millis = divmod(rem, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+def generate_srt(meta_file, spec_dir):
+    with open(meta_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    scenes = data if isinstance(data, list) else data.get("scenes", [])
+    if not scenes:
+        return None
+    srt_lines = []
+    seq_idx = 1
+    for sc in scenes:
+        text = str(sc.get("text", "")).strip()
+        if not text:
+            continue
+        start = float(sc.get("start", 0.0))
+        speech_dur = float(sc.get("audio_dur") or sc.get("dur") or 0.0)
+        end = start + max(0.1, speech_dur)
+        srt_lines.append(f"{seq_idx}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text}\n")
+        seq_idx += 1
+    srt_path = os.path.join(spec_dir, "subtitulos.srt")
+    with open(srt_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(srt_lines))
+    print(f"  ✓ Subtítulos SRT generados: {srt_path}")
+    return srt_path
+
 def main():
     parser = argparse.ArgumentParser(description="Pipeline integral de compilación y render de Explainers.")
     parser.add_argument("spec", help="Ruta al archivo explainer.json")
@@ -217,6 +260,7 @@ def main():
 
     # 1. Validación
     validate_spec(spec_abs, script_dir)
+    lint_spec(spec)
 
     # 2. Voz
     meta_file = os.path.join(spec_dir, "audio_meta.json")
@@ -229,8 +273,11 @@ def main():
     else:
         print("\n[2/4] Síntesis de voz omitida por flag (--skip-voice).")
 
+    srt_path = None
     if not os.path.isfile(meta_file):
         meta_file = None
+    else:
+        srt_path = generate_srt(meta_file, spec_dir)
 
     # 3. Compilación
     compile_spec(spec_abs, out_html, meta_file, script_dir)
@@ -244,6 +291,8 @@ def main():
     print(f"HTML:  {out_html}")
     if os.path.isfile(os.path.join(spec_dir, "voz.mp3")):
         print(f"Audio: {os.path.join(spec_dir, 'voz.mp3')}")
+    if srt_path and os.path.isfile(srt_path):
+        print(f"SRT:   {srt_path}")
     print("=======================================================\n")
 
 if __name__ == "__main__":

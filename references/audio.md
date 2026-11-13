@@ -82,3 +82,30 @@ Para música de fondo, mezclala debajo de la voz y normalizá a −14 LUFS:
 ```bash
 ffmpeg -i out/explainer.mp4 -i voz.mp3 -i musica.mp3 -filter_complex "[2:a]volume=0.15[m];[1:a][m]amix=inputs=2:duration=first,loudnorm=I=-14:TP=-1:LRA=11[a]" -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 192k -shortest -movflags +faststart out/explainer-final.mp4
 ```
+
+## 7. Locución neural automática (`edge-tts` y `AUDIO_META`)
+
+Cuando el usuario elige voz generada con IA (`pipeline.py` o `voces.py`), no necesitás transcribir con Whisper ni crear `WORDS` a mano:
+
+1. **Flujo declarativo integral:**
+   ```bash
+   python SKILL_DIR/scripts/pipeline.py explainer.json
+   ```
+   El pipeline sintetiza cada escena por separado con `edge-tts`, mide la duración hablada real (`audio_dur`) mediante `ffprobe`, inserta la pausa de búfer (`voz.pausa`), genera `voz.mp3`, guarda `audio_meta.json` y `subtitulos.srt`, compila `index.html` y valida los 4 formatos en `simular.cjs`.
+
+2. **Esquema de `AUDIO_META` y escalado proporcional de palabras:**
+   Cada entrada de `audio_meta.json` incluye `{ index, text, spoken, start, dur, audio_dur }`:
+   - `start`: segundo de inicio acumulado de la escena.
+   - `dur`: `audio_dur + pausa` (duración total de la escena en la línea de tiempo).
+   - `audio_dur`: duración hablada real sin la pausa final.
+   El compilador y `voces.py --generar` escalan `s.words` proporcionalmente por `realSpeech / estSpeech` (`realSpeech = audio_dur`) antes de armar `chunks(s.words)` y `makeAt(s)`. Así el resaltado `karaoke` y los anclajes `F.at('palabra')` terminan junto con la voz, nunca durante el silencio final.
+
+3. **Menú interactivo sobre HTML existente:**
+   ```bash
+   python SKILL_DIR/scripts/voces.py --generar explainer.html --menu
+   ```
+
+4. **Exportar MP4 con voz y pista de subtítulos nativa (`mov_text` + `.srt`):**
+   ```bash
+   ffmpeg -y -i out/index.mp4 -i voz.mp3 -i subtitulos.srt -c:v copy -c:a aac -b:a 192k -c:s mov_text -metadata:s:s:0 language=spa -movflags +faststart out/explainer-con-voz.mp4
+   ```

@@ -24,7 +24,8 @@ Este skill produce una página HTML autocontenida. La página se reproduce sola,
 | `scripts/schema.mjs` | Esquema Zod (`ExplainerSpecSchema`) para validar especificaciones declarativas `explainer.json`. |
 | `scripts/compilador.mjs` | Compilador determinista que genera `index.html` desde `explainer.json` y `audio_meta.json`. |
 | `scripts/voces.py` | Menú de selección, prueba y síntesis de voces neurales (`edge-tts`) sincronizadas por escena. |
-| `scripts/pipeline.py` | Pipeline integral: valida `explainer.json`, sintetiza voz, compila HTML y verifica con `simular.cjs`. |
+| `scripts/pipeline.py` | Pipeline integral: valida `explainer.json`, lint anti-emoji, sintetiza voz, genera `subtitulos.srt`, compila HTML y verifica con `simular.cjs`. |
+| `AGENTS.md` | Reglas jerárquicas del repositorio: invariantes de subtítulos, sincronía `audio_dur`, determinismo y compuerta de verificación. |
 
 En los comandos, `SKILL_DIR` es la carpeta de este archivo.
 
@@ -100,7 +101,7 @@ Si la carpeta es de solo lectura, mostrá el perfil en un bloque. Así el usuari
 La gente escucha la voz. La pantalla no repite lo que dice la voz.
 
 - No pongas títulos, rótulos, leyendas, chips de estado ni listas.
-- Convertí cada concepto en un ícono o en una acción animada.
+- Convertí cada concepto en un ícono o en una acción animada (nunca uses emojis Unicode en `drawCode`; `pipeline.py` emite `[LINT]` si los detecta).
 - Dejá solo el texto que funciona como ícono: años en una línea de tiempo, una fecha en un calendario, un nombre de archivo en una ventana.
 - Usá como máximo 4 palabras en pantalla por escena, sin contar los subtítulos.
 - Los subtítulos son el único texto real.

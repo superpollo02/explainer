@@ -24,11 +24,16 @@ export function compileExplainer(specOrPath, options = {}) {
   const { meta, voz, escenas } = validated;
 
   let audioMeta = null;
+  let audioSrc = options.audioSrc || '';
   if (options.audioMeta) {
     if (Array.isArray(options.audioMeta)) {
       audioMeta = options.audioMeta;
     } else if (Array.isArray(options.audioMeta.scenes)) {
       audioMeta = options.audioMeta.scenes.map(s => ({ start: s.start, dur: s.dur, audio_dur: s.audio_dur }));
+    }
+    if (!audioSrc && typeof specOrPath === 'string') {
+      const candidateMp3 = path.join(path.dirname(specOrPath), 'voz.mp3');
+      if (fs.existsSync(candidateMp3)) audioSrc = 'voz.mp3';
     }
   } else if (escenas.every(s => typeof s.duracion === 'number')) {
     audioMeta = escenas.map(s => ({ start: s.inicio || 0, dur: s.duracion }));
@@ -295,7 +300,7 @@ body.render .aside{display:none}
   const SAY = ${sayObjectJson};
 
   const WORDS = [];
-  const AUDIO_SRC = '';
+  const AUDIO_SRC = ${JSON.stringify(audioSrc)};
 
   // ================= 3. Formatos =================
   const FORMATS = {
@@ -334,8 +339,19 @@ body.render .aside{display:none}
   const seg = (t, a, b) => clamp((t - a) / (b - a));
   const lerp = (a, b, k) => a + (b - a) * k;
   const ease = x => 1 - Math.pow(1 - x, 3);
+  const easeIO = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
   const q4 = x => x < .5 ? 8 * x ** 4 : 1 - Math.pow(-2 * x + 2, 4) / 2;
+  const outExpo = x => x >= 1 ? 1 : 1 - Math.pow(2, -10 * x);
+  const inExpo = x => x <= 0 ? 0 : Math.pow(2, 10 * x - 10);
+  const outBack = x => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
   const pop = (t, a, d = .35) => { const k = seg(t, a, a + d); return k <= 0 ? 0 : k >= 1 ? 1 : ease(k) * (1 + .18 * Math.sin(k * Math.PI)); };
+  function spring(t, zeta = .75, f = 2) {
+    if (t <= 0) return 0;
+    const w = TAU * f;
+    if (zeta >= 1) return 1 - Math.exp(-w * t) * (1 + w * t);
+    const wd = w * Math.sqrt(1 - zeta * zeta);
+    return 1 - Math.exp(-zeta * w * t) * (Math.cos(wd * t) + (zeta * w / wd) * Math.sin(wd * t));
+  }
 
   function hexRGB(hex) {
     let h = hex.replace('#', '');
@@ -344,6 +360,21 @@ body.render .aside{display:none}
     return [n >> 16 & 255, n >> 8 & 255, n & 255];
   }
   const rgba = (hex, a) => { const [r, g, b] = hexRGB(hex); return \`rgba(\${r},\${g},\${b},\${a})\`; };
+  const mix = (h1, h2, k) => { const a = hexRGB(h1), b = hexRGB(h2); return \`rgb(\${a.map((v, i) => Math.round(lerp(v, b[i], k))).join(',')})\`; };
+  function rng(seed) {
+    return () => {
+      seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+      let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function gauss(r) {
+    let u = 0, v = 0;
+    while (!u) u = r();
+    while (!v) v = r();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(TAU * v);
+  }
 
   // ================= 5. Lienzo y cámara =================
   const frameEl = document.getElementById('frame');
@@ -399,6 +430,21 @@ body.render .aside{display:none}
     ctx.fillRect(0, 0, W, H); ctx.restore();
   }
 
+  function fixed(fn) {
+    const u = Math.min(W, H) / 100;
+    ctx.save(); ctx.setTransform(DPR * u, 0, 0, DPR * u, DPR * W / 2, DPR * H * FMT.foco); fn(); ctx.restore();
+  }
+  function scrim(a = .55) {
+    if (a <= 0 || CONFIG.subtitulos === 'no') return;
+    ctx.save(); ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const y0 = H * FMT.accion[1], y1 = H * FMT.subs[0];
+    const gr = ctx.createLinearGradient(0, y0, 0, y1);
+    gr.addColorStop(0, rgba(C.bg, 0)); gr.addColorStop(1, rgba(C.bg, a));
+    ctx.fillStyle = gr; ctx.fillRect(0, y0, W, y1 - y0);
+    ctx.fillStyle = rgba(C.bg, a); ctx.fillRect(0, y1, W, H - y1);
+    ctx.restore();
+  }
+
   // ================= 6. Ayudantes de dibujo =================
   function txt(s, x, y, o = {}) {
     ctx.save();
@@ -409,6 +455,113 @@ body.render .aside{display:none}
   }
   function line(x0, y0, x1, y1) { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); }
   function rrect(x, y, w, h, r) { ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y, w, h, r); else ctx.rect(x, y, w, h); }
+  function dot(x, y, r, color, a = 1) { if (a <= 0 || r <= 0) return; ctx.save(); ctx.globalAlpha *= a; ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); ctx.restore(); }
+
+  function ring(x, y, r, a, color = C.accent, lw = .7) {
+    if (a <= 0 || r <= 0) return;
+    ctx.save(); ctx.globalAlpha *= a; ctx.strokeStyle = color; ctx.lineWidth = lw;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke(); ctx.restore();
+  }
+  function brackets(x, y, s, a, color = C.accent) {
+    if (a <= 0) return;
+    const l = s * .3;
+    ctx.save(); ctx.globalAlpha *= a; ctx.strokeStyle = color; ctx.lineWidth = .7; ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { const px = x + sx * s, py = y + sy * s; ctx.moveTo(px, py - sy * l); ctx.lineTo(px, py); ctx.lineTo(px - sx * l, py); }
+    ctx.stroke(); ctx.restore();
+  }
+  function arrow(x0, y0, x1, y1, a, color = C.ink, lw = .7) {
+    if (a <= 0) return;
+    const ang = Math.atan2(y1 - y0, x1 - x0), h = Math.max(1.4, lw * 3);
+    ctx.save(); ctx.globalAlpha *= a; ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    line(x0, y0, x1, y1);
+    ctx.beginPath(); ctx.moveTo(x1 - h * Math.cos(ang - .5), y1 - h * Math.sin(ang - .5)); ctx.lineTo(x1, y1); ctx.lineTo(x1 - h * Math.cos(ang + .5), y1 - h * Math.sin(ang + .5)); ctx.stroke();
+    ctx.restore();
+  }
+  function check(x, y, r, a) {
+    if (r <= 0 || a <= 0) return;
+    ctx.save(); ctx.globalAlpha *= a; ctx.fillStyle = C.ok; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+    ctx.strokeStyle = C.bg; ctx.lineWidth = r * .22; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(x - r * .42, y + r * .02); ctx.lineTo(x - r * .1, y + r * .34); ctx.lineTo(x + r * .45, y - r * .3); ctx.stroke();
+    ctx.restore();
+  }
+  function cross(x, y, s, a, color = C.warn) {
+    if (a <= 0) return;
+    ctx.save(); ctx.globalAlpha *= a; ctx.strokeStyle = color; ctx.lineWidth = Math.max(.5, s * .25); ctx.lineCap = 'round';
+    line(x - s, y - s, x + s, y + s); line(x - s, y + s, x + s, y - s); ctx.restore();
+  }
+  function person(x, y, s, color = C.ink, a = 1) {
+    if (s <= 0 || a <= 0) return;
+    ctx.save(); ctx.globalAlpha *= a; ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(x, y - s * .45, s * .32, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x, y + s * .42, s * .58, s * .45, 0, Math.PI, TAU); ctx.fill();
+    ctx.restore();
+  }
+  function bubble(x, y, s, glyph, fill = C.ink, a = 1) {
+    if (s <= 0 || a <= 0) return;
+    ctx.save(); ctx.globalAlpha *= a; ctx.fillStyle = fill;
+    rrect(x - s, y - s * .75, s * 2, s * 1.5, s * .45); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x - s * .55, y + s * .6); ctx.lineTo(x - s * .95, y + s * 1.15); ctx.lineTo(x - s * .1, y + s * .6); ctx.fill();
+    ctx.restore();
+    txt(glyph, x, y + s * .06, { size: s * 1.2, color: C.bg, w: 800, a });
+  }
+  function doc(x, y, s, a = 1, lines = 5) {
+    if (s <= 0 || a <= 0) return;
+    const w = s * 1.5, h = s * 2, f = s * .4, x0 = x - w / 2, y0 = y - h / 2;
+    ctx.save(); ctx.globalAlpha *= a; ctx.fillStyle = C.panel; ctx.strokeStyle = C.ink; ctx.lineWidth = .6; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0 + w - f, y0); ctx.lineTo(x0 + w, y0 + f); ctx.lineTo(x0 + w, y0 + h); ctx.lineTo(x0, y0 + h); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = rgba(C.muted, .8);
+    for (let i = 0; i < lines; i++) ctx.fillRect(x0 + w * .15, y0 + h * (.3 + i * .13), w * (i % 3 === 2 ? .45 : .68), Math.max(.4, s * .07));
+    ctx.restore();
+  }
+  function laptop(x, y, s, a = 1, glow = 0) {
+    if (s <= 0 || a <= 0) return;
+    ctx.save(); ctx.globalAlpha *= a; ctx.strokeStyle = C.ink; ctx.lineWidth = .6; ctx.lineJoin = 'round';
+    ctx.fillStyle = rgba(C.accent2, .08 + .3 * glow);
+    rrect(x - s, y - s * .68, s * 2, s * 1.25, s * .1); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x - s * 1.3, y + s * .62); ctx.lineTo(x + s * 1.3, y + s * .62); ctx.lineTo(x + s * 1.15, y + s * .8); ctx.lineTo(x - s * 1.15, y + s * .8); ctx.closePath(); ctx.stroke();
+    ctx.restore();
+  }
+  function terminal(x, y, s, a = 1) {
+    if (s <= 0 || a <= 0) return;
+    ctx.save(); ctx.globalAlpha *= a; ctx.fillStyle = C.panel; ctx.strokeStyle = C.accent2; ctx.lineWidth = .6;
+    rrect(x - s, y - s * .72, s * 2, s * 1.44, s * .25); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = C.accent; ctx.lineWidth = s * .16; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(x - s * .55, y - s * .3); ctx.lineTo(x - s * .15, y); ctx.lineTo(x - s * .55, y + s * .3); ctx.stroke();
+    line(x + s * .05, y + s * .32, x + s * .55, y + s * .32);
+    ctx.restore();
+  }
+  function magnifier(x, y, r, a = 1) {
+    if (r <= 0 || a <= 0) return;
+    ctx.save(); ctx.globalAlpha *= a; ctx.strokeStyle = C.ink; ctx.lineWidth = r * .18; ctx.lineCap = 'round'; ctx.fillStyle = rgba(C.accent2, .14);
+    ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); ctx.stroke();
+    line(x + r * .72, y + r * .72, x + r * 1.55, y + r * 1.55); ctx.restore();
+  }
+  function calendar(x, y, s, month, day, a = 1) {
+    if (s <= 0 || a <= 0) return;
+    ctx.save(); ctx.globalAlpha *= a; ctx.fillStyle = C.panel; ctx.strokeStyle = C.ink; ctx.lineWidth = .5;
+    rrect(x - s, y - s, s * 2, s * 2, s * .22); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = C.accent; rrect(x - s, y - s, s * 2, s * .6, [s * .22, s * .22, 0, 0]); ctx.fill();
+    ctx.restore();
+    txt(month, x, y - s * .69, { size: s * .38, color: C.bg, family: FONT.mono, a });
+    txt(day, x, y + s * .36, { size: s * 1.05, w: 800, a });
+  }
+  function clock(x, y, r, k, a = 1) {
+    if (r <= 0 || a <= 0) return;
+    ctx.save(); ctx.globalAlpha *= a; ctx.strokeStyle = C.ink; ctx.lineWidth = r * .1;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke();
+    ctx.fillStyle = rgba(C.accent, .85); ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, r * .82, -Math.PI / 2, -Math.PI / 2 + TAU * clamp(k)); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  function bulb(x, y, s, on = 1, a = 1) {
+    if (s <= 0 || a <= 0) return;
+    ctx.save(); ctx.globalAlpha *= a;
+    if (on > 0) { const gr = ctx.createRadialGradient(x, y - s * .2, s * .2, x, y - s * .2, s * 2.2); gr.addColorStop(0, rgba(C.accent, .45 * on)); gr.addColorStop(1, rgba(C.accent, 0)); ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, y - s * .2, s * 2.2, 0, TAU); ctx.fill(); }
+    ctx.fillStyle = on > .5 ? C.accent : C.panel; ctx.strokeStyle = C.ink; ctx.lineWidth = s * .08;
+    ctx.beginPath(); ctx.arc(x, y - s * .25, s * .62, Math.PI * .8, Math.PI * 2.2); ctx.lineTo(x + s * .3, y + s * .55); ctx.lineTo(x - s * .3, y + s * .55); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = C.muted; ctx.fillRect(x - s * .3, y + s * .62, s * .6, s * .28);
+    ctx.restore();
+  }
 
   function checkBadge(x, y, r, a = 1) {
     if (r <= 0 || a <= 0) return;
@@ -495,7 +648,7 @@ ${scenesJsCode}
       for (let i = 0; i + parts.length <= s.words.length && res === null; i++) {
         if (parts.every((p, k) => norm(s.words[i + k].w).startsWith(p)) && ++hits === n) res = s.words[i].s;
       }
-      if (res === null) { res = 0; }
+      if (res === null) { console.warn(\`at("\${q}") no aparece en la escena \${s.i + 1}: "\${s.text.slice(0, 50)}…"\`); res = 0; }
       cache.set(key, res);
       return res;
     };
@@ -518,7 +671,11 @@ ${sceneTimingSetup}
   blks.forEach(b => b.addEventListener('click', () => { nav(+b.dataset.i); closeSheet(); }));
   if (CONFIG.subtitulos === 'karaoke') subsEl.classList.add('karaoke');
 
-  let T = 0, idx = -1, playing = !reduce && !RENDER, ended = false, clean = false, bare = false, last = performance.now();
+  const audio = document.getElementById('voz');
+  const hasAudio = !RENDER && !!AUDIO_SRC && !!audio && typeof audio.play === 'function';
+  if (hasAudio) audio.src = AUDIO_SRC;
+
+  let T = 0, idx = -1, playing = !reduce && !hasAudio && !RENDER, ended = false, clean = false, bare = false, last = performance.now();
   let chunkIdx = -1, wordEls = [];
   const sceneAt = t => { let i = N - 1; while (i > 0 && SCENES[i].start > t) i--; return i; };
 
@@ -574,9 +731,16 @@ ${sceneTimingSetup}
     if (replay) replay.hidden = !ended;
   }
 
-  function seek(t) { T = clamp(t, 0, TOTAL - 1e-3); ended = false; }
-  function play() { playing = true; ended = false; syncUI(); }
-  function pause() { playing = false; syncUI(); }
+  function seek(t) {
+    T = clamp(t, 0, TOTAL - 1e-3); ended = false;
+    if (hasAudio) { try { audio.currentTime = T; } catch (e) { /* audio sin cargar */ } }
+  }
+  function play() {
+    playing = true; ended = false;
+    if (hasAudio) { try { audio.currentTime = T; } catch (e) { /* audio sin cargar */ } audio.play().catch(() => {}); }
+    syncUI();
+  }
+  function pause() { playing = false; if (hasAudio) audio.pause(); syncUI(); }
   function nav(i) { seek(SCENES[clamp(i, 0, N - 1)].start + 1e-3); play(); }
   function toggle() { if (ended) { seek(0); play(); } else if (playing) pause(); else play(); }
   function finish() { T = TOTAL - 1e-3; pause(); ended = true; syncUI(); }
@@ -642,7 +806,7 @@ ${sceneTimingSetup}
     const dt = Math.min(.05, (now - last) / 1000);
     last = now;
     if (playing) {
-      T += dt;
+      if (hasAudio && !audio.paused) T = audio.currentTime; else T += dt;
       if (T >= TOTAL) finish();
     }
     paint();
